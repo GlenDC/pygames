@@ -7,18 +7,45 @@ Author: Glen De Cauwsemaecker
         contact@glendc.com
 """
 
-from abc import ABC, abstractmethod
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Tuple
 
 import pygame
 
 
-class GameObject(ABC):
+@dataclass
+class Vec2D:
+    x: int = 0
+    y: int = 0
+
+
+@dataclass
+class Color:
+    r: int = 255
+    g: int = 255
+    b: int = 255
+
+    def tuple(self):
+        return (
+            max(0, min(self.r, 255)),
+            max(0, min(self.g, 255)),
+            max(0, min(self.b, 255)),
+        )
+
+
+@dataclass
+class GameObject:
     """
     Base class for all Game Objects
+
+    width and height expressed in units
     """
+
+    pos: Vec2D = field(default_factory=Vec2D)
+    width: int = 1
+    height: int = 1
+    color: Color = field(default_factory=Color)
 
     def handle_event(self, ctx, event):
         """
@@ -35,136 +62,49 @@ class GameObject(ABC):
         pass
 
     def draw(self, ctx):
-        """
-        Optional method, to be implemented in case
-        the game object requires to be drawn.
-        """
-        pass
+        pygame.draw.rect(ctx.screen, self.color.tuple(), self.get_rect(ctx))
+
+    def get_rect(self, ctx):
+        screen_rect = ctx.screen.get_rect()
+        height = self.height*ctx.unit_size
+        return pygame.Rect(
+            # for this game it's easiest to have coords start at bottom left
+            self.pos.x*ctx.unit_size,
+            screen_rect.height - (self.pos.y*ctx.unit_size + ctx.menu_height) - height,
+            self.width*ctx.unit_size, height,
+        )
 
 
-@dataclass
+@dataclass(init=False)
 class Hero(GameObject):
-    pos: Tuple[int, int]
-    width: int
-    height: int
+    def __init__(self):
+        super().__init__()
 
-    def draw(self, ctx):
-        pygame.draw.rect(ctx.screen, (0, 0, 0), self.get_rect())
+        self.color = Color(r=65, g=255, b=0)
+        self.pos.x = 2
+        self.width = 1
+        self.height = 2
 
-    def handle_event(self, ctx, event):
-        if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
-            bullet = Bullet(self.pos, width=5, height=10, speed=3)
-            ctx.game_objects.append(bullet)
+        self.acceleration = 0
 
     def update(self, ctx):
+        # jump if can
         pressed = pygame.key.get_pressed()
-        x, y = self.pos
-        if pressed[pygame.K_LEFT]: x -= 3
-        if pressed[pygame.K_RIGHT]: x += 3
-        self.pos = (x, y)
+        if self.pos.y == 0 and pressed[pygame.K_SPACE]:
+            self.acceleration = 0.6
 
-    def get_rect(self):
-        return pygame.Rect(
-            self.pos[0] - self.width/2,
-            self.pos[1] - self.height/2,
-            self.width, self.height,
-        )
+        # compute height movement, if in jump-mode
+        if self.acceleration != 0:
+            # decrease height acceleration of player using the gravity
+            self.acceleration -= ctx.gravity / max(1, ctx.clock.get_fps())
+            self.pos.y += self.acceleration
 
-
-@dataclass
-class Bullet(GameObject):
-    pos: Tuple[int, int]
-    width: int
-    height: int
-    speed: int
-
-    def draw(self, ctx):
-        pygame.draw.rect(ctx.screen, (0, 200, 0), self.get_rect())
-
-    def update(self, ctx):
-        # move bullet
-        pressed = pygame.key.get_pressed()
-        x, y = self.pos
-        y -= self.speed
-        self.pos = (x, y)
-
-        # TODO: destroy when from screen
-
-        # kill all enemies in my path
-        destroyed = False
-        mob = None
-        for game_object in ctx.game_objects:
-            if isinstance(game_object, Mob):
-                mob = game_object
-                break
-        for idx, game_object in enumerate(mob.members):
-            rect = self.get_rect()
-            enemy_rect = game_object.get_rect()
-            if rect.colliderect(enemy_rect):
-                # DESTROY HIM
-                del mob.members[idx]
-                destroyed = True
-                break
-        if destroyed:
-            for idx, game_object in enumerate(ctx.game_objects):
-                if game_object is self:
-                    del ctx.game_objects[idx]
-                    break
-
-
-    def get_rect(self):
-        return pygame.Rect(
-            self.pos[0] - self.width/2,
-            self.pos[1] - self.height/2,
-            self.width, self.height,
-        )
-
-
-@dataclass
-class Enemy(GameObject):
-    pos: Tuple[int, int]
-    width: int
-    height: int
-    previous_x: int = 0
-
-    def draw(self, ctx):
-        pygame.draw.rect(ctx.screen, (200, 0, 0), self.get_rect())
-
-    def update(self, ctx):
-        self.previous_x = self.pos[0]
-
-    def get_rect(self):
-        return pygame.Rect(
-            self.pos[0] - self.width/2,
-            self.pos[1] - self.height/2,
-            self.width, self.height,
-        )
-
-
-@dataclass
-class Mob(GameObject):
-    members: List[Enemy]
-    speed: int
-    offset: int
-
-    def draw(self, ctx):
-        for member in self.members:
-            member.draw(ctx)
-
-    def handle_event(self, ctx, event):
-        for member in self.members:
-            member.handle_event(ctx, event)
-
-    def update(self, ctx):
-        for member in self.members:
-            x, y = member.pos
-            x = (x + self.speed) % ctx.screen.get_rect().width
-
-            if member.previous_x > x:
-                y += self.offset
-            member.pos = (x, y)
-
-            member.update(ctx)
+            # land on the ground, yay,
+            # landing in a gap is not something we control here,
+            # but the gap instead will collide with the player, think about that :)
+            if self.pos.y <= 0:
+                self.pos.y = 0
+                self.acceleration = 0
 
 
 @dataclass
@@ -174,6 +114,10 @@ class GameContext:
     know how to handle events and display the content to the screen.
     """
     screen: object
+    menu_height: int
+    unit_size: int
+    gravity: int
+    speed: int
     clock: pygame.time.Clock
     font: pygame.font.Font
     game_objects: List[GameObject]
@@ -198,7 +142,7 @@ def draw(ctx):
     # wipe screen
     background = pygame.Surface(ctx.screen.get_size())
     background = background.convert()
-    background.fill((225, 225, 225))
+    background.fill((0, 0, 0))
     ctx.screen.blit(background, (0, 0))
 
     # draw all game objects
@@ -209,55 +153,31 @@ def draw(ctx):
     pygame.display.flip()
 
 
-def main():
-    pygame.init()
-    pygame.display.set_caption('Space Invader')
+#################### main ########################
 
-    # create the initial context,
-    # context can be updated ad-hoc in handle_event,
-    # dirty indeed
-    ctx = GameContext(
-        screen=pygame.display.set_mode((400, 300)),
-        clock=pygame.time.Clock(),
-        font=pygame.font.Font(pygame.font.get_default_font(), 12),
-        game_objects=[
-            Hero(
-                pos=(200, 275),
-                width=50, height=20,
-            ),
-            Mob(
-                members=[
-                    Enemy(
-                        pos=(5, 5),
-                        width=35, height=35,
-                    ),
-                    Enemy(
-                        pos=(55, 5),
-                        width=35, height=35,
-                    ),
-                    Enemy(
-                        pos=(105, 5),
-                        width=35, height=35,
-                    ),
-                    Enemy(
-                        pos=(155, 5),
-                        width=35, height=35,
-                    ),
-                    Enemy(
-                        pos=(205, 5),
-                        width=35, height=35,
-                    ),
-                ],
-                speed=3,
-                offset=40,
-            ),
-        ],
-    )
+pygame.init()
+pygame.display.set_caption('pingrunner')
 
-    # start the game
-    while True:
-        for event in pygame.event.get():
-            handle_event(ctx, event)
-        update(ctx)
-        draw(ctx)
-        ctx.clock.tick(60)
+# create the initial context,
+# context can be updated ad-hoc in handle_event,
+# dirty indeed
+ctx = GameContext(
+    screen=pygame.display.set_mode((480, 200)),
+    menu_height=75,
+    unit_size=(200 - 75) / 10,  # (screen_height - menu_height) / 8
+    gravity=1.75,
+    speed=1,
+    clock=pygame.time.Clock(),
+    font=pygame.font.Font(pygame.font.get_default_font(), 12),
+    game_objects=[
+        Hero(),
+    ],
+)
+
+# start the game
+while True:
+    for event in pygame.event.get():
+        handle_event(ctx, event)
+    update(ctx)
+    draw(ctx)
+    ctx.clock.tick(60)
